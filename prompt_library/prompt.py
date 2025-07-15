@@ -19,7 +19,7 @@ SYSTEM_PROMPT = SystemMessage(
     - Weather details
     - Best time to visit
     - Any other relevant information
-    -age group
+    - age group 
     
     Use the available tools to gather information and make detailed cost breakdowns.
     Provide everything in one comprehensive response formatted in clean Markdown.
