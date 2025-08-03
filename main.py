@@ -23,11 +23,11 @@ async def query_travel_agent(query: QueryRequest):
     try:
         print(query)
 
-        # No need to pass api_key if your GraphBuilder reads from env
+        # Instantiate the agent graph
         graph = GraphBuilder(model_provider="groq")
         react_app = graph()
 
-        # Save visualized graph
+        # Save visualized graph as PNG
         png_graph = react_app.get_graph().draw_mermaid_png()
         with open("my_graph.png", "wb") as f:
             f.write(png_graph)
@@ -48,3 +48,8 @@ async def query_travel_agent(query: QueryRequest):
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+# Root endpoint to confirm API is live
+@app.get("/")
+async def root():
+    return {"message": "AI Trip Planner API is live!"}
