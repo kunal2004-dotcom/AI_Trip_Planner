@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from agent.agentic_workflow import GraphBuilder
 from fastapi.responses import JSONResponse
-from starlette.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware  # ✅ ADD THIS
 import os
 from dotenv import load_dotenv
 
@@ -14,6 +14,15 @@ if not os.getenv("GROQ_API_KEY"):
     raise ValueError("GROQ_API_KEY is not set. Please set it in your .env file.")
 
 app = FastAPI()
+
+# ✅ Enable CORS to avoid 403 errors
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # ⚠️ Replace "*" with your frontend domain in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class QueryRequest(BaseModel):
     query: str
