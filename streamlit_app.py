@@ -92,6 +92,79 @@ html, body, [class*="css"] {
     color: #A0A5B5;
     margin-bottom: 15px;
 }
+
+/* ── Floating Map Button ── */
+#map-fab {
+    position: fixed;
+    bottom: 28px;
+    left: 28px;
+    z-index: 99999;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #FF4B4B, #FF8A3D);
+    color: white;
+    font-size: 1.6rem;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 6px 20px rgba(255,75,75,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+#map-fab:hover {
+    transform: scale(1.12);
+    box-shadow: 0 8px 28px rgba(255,75,75,0.7);
+}
+
+/* ── Map Modal Overlay ── */
+#map-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 99998;
+    background: rgba(0,0,0,0.75);
+    backdrop-filter: blur(4px);
+    align-items: center;
+    justify-content: center;
+}
+#map-modal.open {
+    display: flex;
+}
+#map-modal-inner {
+    position: relative;
+    width: min(820px, 92vw);
+    height: min(540px, 80vh);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+    border: 2px solid rgba(255,75,75,0.4);
+}
+#map-modal-inner iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+}
+#map-close {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    background: rgba(0,0,0,0.6);
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 34px;
+    height: 34px;
+    font-size: 1.1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    transition: background 0.2s;
+}
+#map-close:hover { background: rgba(255,75,75,0.8); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -187,6 +260,10 @@ if st.sidebar.button("🗑️ Clear Chat Memory"):
     st.session_state["chat_history"] = []
     st.session_state["thread_id"] = str(uuid.uuid4())
     st.session_state["itinerary_data"] = None
+    st.session_state["ticket_search_results"] = None
+    st.session_state["hotel_search_results"] = None
+    st.session_state["booking_receipt"] = None
+    st.session_state["last_map_url"] = None
     st.success("Chat and dashboard cleared!")
 
 # Display Banner Image
@@ -204,6 +281,14 @@ if "thread_id" not in st.session_state:
     st.session_state["thread_id"] = str(uuid.uuid4())
 if "itinerary_data" not in st.session_state:
     st.session_state["itinerary_data"] = None
+if "ticket_search_results" not in st.session_state:
+    st.session_state["ticket_search_results"] = None
+if "hotel_search_results" not in st.session_state:
+    st.session_state["hotel_search_results"] = None
+if "booking_receipt" not in st.session_state:
+    st.session_state["booking_receipt"] = None
+if "last_map_url" not in st.session_state:
+    st.session_state["last_map_url"] = None
 
 # Update environment dynamically
 if groq_key_input:
@@ -228,14 +313,14 @@ with col_chat:
         if len(st.session_state["chat_history"]) == 0:
             st.write("👋 *Hello! I am your AI travel agent. Tell me where you want to go, starting location, travel dates, or ask me to search hotels and book flight tickets!*")
         
-        for chat in st.session_state["chat_history"]:
+        for i, chat in enumerate(st.session_state["chat_history"]):
             with st.chat_message(chat["role"]):
                 st.markdown(chat["content"])
                 
-                # Check for OpenStreetMap URL inside chat
+                # Silently capture the latest map URL — no inline iframe
                 map_url = extract_map_url(chat["content"])
                 if map_url:
-                    st.iframe(map_url, height=350)
+                    st.session_state["last_map_url"] = map_url
                     
     # Chat inputs
     user_query = st.chat_input("Ask the agent: 'Plan a 5-day trip to Goa from Delhi' or 'Search tickets to Paris'...")
@@ -265,9 +350,10 @@ with col_chat:
                         st.session_state["chat_history"].append({"role": "assistant", "content": answer})
                         
                         # Render Map if returned
+                        # Capture map URL for floating button, don't render inline
                         map_url = extract_map_url(answer)
                         if map_url:
-                            st.iframe(map_url, height=350)
+                            st.session_state["last_map_url"] = map_url
                             
                         # If the agent updated the itinerary dashboard data, update it in session state
                         if data.get("itinerary_data"):
@@ -290,10 +376,11 @@ with col_dashboard:
             # Destination and days header
             st.markdown(f"#### 🌍 Plan: {itinerary.get('destination')} ({itinerary.get('duration_days')} Days)")
             
-            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
                 "🗺️ Overview", 
                 "📅 Day-by-Day", 
                 "💰 Expenses", 
+                "🎟️ Bookings", 
                 "💡 Travel Tips", 
                 "📥 Export"
             ])
@@ -350,15 +437,110 @@ with col_dashboard:
                 except Exception:
                     pass
                     
-            # Tab 4: Travel Tips
+            # Tab 4: Interactive Bookings
             with tab4:
+                st.markdown("##### 🎟️ Booking Terminal")
+                st.write("Search and book flights, trains, buses, and hotels directly with point-and-click buttons.")
+                
+                category = st.radio("Select Booking Category", ["✈️ Transport Tickets", "🏨 Hotel Rooms"], horizontal=True)
+                
+                if category == "✈️ Transport Tickets":
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        from_loc_in = st.text_input("Departure Location", value="Delhi")
+                        vehicle_in = st.selectbox("Transport Type", ["Flight", "Train", "Bus"])
+                    with col2:
+                        to_loc_in = st.text_input("Arrival Location", value=itinerary.get("destination", "Goa").split(",")[0])
+                        passenger_in = st.text_input("Passenger Name", value="Kunal Bagad")
+                    
+                    travel_date_in = st.date_input("Travel Date", value=pd.to_datetime("2026-06-25"))
+                    
+                    search_ticket_btn = st.button("🔍 Search Transport Tickets", use_container_width=True)
+                    
+                    # Store search state
+                    if search_ticket_btn:
+                        from tools.booking import get_ticket_options_raw
+                        st.session_state["ticket_search_results"] = get_ticket_options_raw(from_loc_in, to_loc_in, str(travel_date_in), vehicle_in)
+                        st.session_state["hotel_search_results"] = None
+                        st.session_state["booking_receipt"] = None
+                    
+                    if st.session_state.get("ticket_search_results"):
+                        st.markdown("###### Select an Option to Book:")
+                        for idx, opt in enumerate(st.session_state["ticket_search_results"]):
+                            # Render card
+                            with st.container(border=True):
+                                col_info, col_btn = st.columns([3, 1])
+                                with col_info:
+                                    st.markdown(f"**{opt['carrier']} ({opt['number']})**")
+                                    st.write(f"🕐 Departs: {opt['dep_time']} | Arrives: {opt['arr_time']}")
+                                    st.markdown(f"**Price: ₹{opt['price_inr']}**")
+                                with col_btn:
+                                    # Unique key for button
+                                    btn_key = f"book_t_{idx}_{opt['number']}"
+                                    if st.button(f"🎟️ Book", key=btn_key):
+                                        from tools.booking import book_ticket
+                                        receipt = book_ticket(from_loc_in, to_loc_in, str(travel_date_in), f"{opt['carrier']} ({opt['number']})", opt["price_inr"], passenger_in)
+                                        st.session_state["booking_receipt"] = receipt
+                                        # Also append to chat history as context
+                                        st.session_state["chat_history"].append({"role": "assistant", "content": receipt})
+                                        st.rerun()
+                                        
+                else: # Hotel Rooms
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        hotel_dest_in = st.text_input("Hotel Destination", value=itinerary.get("destination", "Goa").split(",")[0])
+                        checkin_in = st.date_input("Check-In Date", value=pd.to_datetime("2026-06-25"))
+                    with col2:
+                        guest_in = st.text_input("Guest Name", value="Kunal Bagad")
+                        checkout_in = st.date_input("Check-Out Date", value=pd.to_datetime("2026-06-28"))
+                        
+                    hotel_tier_in = st.selectbox("Hotel Tier", ["Moderate", "Budget", "Luxury"])
+                    
+                    search_hotel_btn = st.button("🏨 Search Available Hotels", use_container_width=True)
+                    
+                    if search_hotel_btn:
+                        from tools.booking import get_hotel_options_raw
+                        st.session_state["hotel_search_results"] = get_hotel_options_raw(hotel_dest_in, str(checkin_in), str(checkout_in), hotel_tier_in)
+                        st.session_state["ticket_search_results"] = None
+                        st.session_state["booking_receipt"] = None
+                        
+                    if st.session_state.get("hotel_search_results"):
+                        st.markdown("###### Select a Hotel Room to Book:")
+                        for idx, h in enumerate(st.session_state["hotel_search_results"]):
+                            with st.container(border=True):
+                                col_info, col_btn = st.columns([3, 1])
+                                with col_info:
+                                    st.markdown(f"**{h['name']} ({h['rating']})**")
+                                    st.write(f"🛏️ Room Type: {h['room_type']}")
+                                    st.markdown(f"**Price: ₹{h['price_per_night']}/night**")
+                                with col_btn:
+                                    btn_key = f"book_h_{idx}_{h['name'].replace(' ', '_')}"
+                                    if st.button(f"🏨 Reserve", key=btn_key):
+                                        from tools.booking import book_hotel
+                                        receipt = book_hotel(h['name'], str(checkin_in), str(checkout_in), guest_in, h['price_per_night'])
+                                        st.session_state["booking_receipt"] = receipt
+                                        # Append to chat logs
+                                        st.session_state["chat_history"].append({"role": "assistant", "content": receipt})
+                                        st.rerun()
+                                        
+                # If a booking receipt has been generated, render it beautifully
+                if st.session_state.get("booking_receipt"):
+                    st.success("Booking Completed Successfully!")
+                    st.markdown(f"""
+                    <div style="background-color: #1E222B; border-radius: 12px; padding: 15px; border-left: 5px solid #4CAF50; margin-top: 15px; font-family: monospace; white-space: pre-wrap; font-size: 0.9rem; color: #E0E0E0;">
+{st.session_state["booking_receipt"]}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+            # Tab 5: Travel Tips
+            with tab5:
                 st.markdown("##### Practical Local Guides")
                 for tip in itinerary.get('general_travel_tips', []):
                     with st.expander(f"💡 {tip.get('title')}", expanded=True):
                         st.write(tip.get('details'))
                         
-            # Tab 5: Export options
-            with tab5:
+            # Tab 6: Export options
+            with tab6:
                 st.markdown("##### Export Travel Plan")
                 markdown_doc = itinerary_to_markdown(itinerary)
                 
@@ -390,3 +572,44 @@ with col_dashboard:
             </p>
         </div>
         """, unsafe_allow_html=True)
+
+# ── Floating Map FAB + Modal (always rendered at page bottom) ──
+last_map_url = st.session_state.get("last_map_url", "")
+if last_map_url:
+    st.markdown(f"""
+    <!-- Floating Map Button -->
+    <button id="map-fab" title="View Destination Map" onclick="toggleMapModal()">🗺️</button>
+
+    <!-- Map Modal Overlay -->
+    <div id="map-modal" onclick="handleOverlayClick(event)">
+        <div id="map-modal-inner">
+            <button id="map-close" onclick="closeMapModal()" title="Close Map">✕</button>
+            <iframe
+                src="{last_map_url}"
+                allowfullscreen
+                loading="lazy"
+                referrerpolicy="no-referrer-when-downgrade">
+            </iframe>
+        </div>
+    </div>
+
+    <script>
+        function toggleMapModal() {{
+            var modal = document.getElementById('map-modal');
+            modal.classList.toggle('open');
+        }}
+        function closeMapModal() {{
+            document.getElementById('map-modal').classList.remove('open');
+        }}
+        function handleOverlayClick(e) {{
+            // Close if clicking outside the inner box
+            if (e.target === document.getElementById('map-modal')) {{
+                closeMapModal();
+            }}
+        }}
+        // Also close on Escape key
+        document.addEventListener('keydown', function(e) {{
+            if (e.key === 'Escape') closeMapModal();
+        }});
+    </script>
+    """, unsafe_allow_html=True)
