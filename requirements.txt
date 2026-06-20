@@ -1,5 +1,13 @@
 streamlit
-google-genai
+fastapi
+uvicorn
 pydantic
+langchain
+langgraph
+langchain-groq
+tavily-python
+langchain-community
+python-dotenv
+requests
 pandas
 pillow
