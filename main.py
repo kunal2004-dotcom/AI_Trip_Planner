@@ -38,11 +38,9 @@ async def query_agent(request: QueryRequest):
         
     # Resolve API Key
     api_key = request.groq_api_key or os.environ.get("GROQ_API_KEY")
+    # If no key is configured, use 'mock' to automatically trigger the mock data fallback
     if not api_key:
-        raise HTTPException(
-            status_code=401,
-            detail="Groq API Key is required. Please set it in .env or provide it in the request."
-        )
+        api_key = "mock"
         
     try:
         # Execute the agent
