@@ -25,6 +25,7 @@ class QueryRequest(BaseModel):
 
 class QueryResponse(BaseModel):
     response: str
+    itinerary_data: Optional[str] = None
 
 @app.post("/query", response_model=QueryResponse)
 async def query_agent(request: QueryRequest):
@@ -45,12 +46,15 @@ async def query_agent(request: QueryRequest):
         
     try:
         # Execute the agent
-        response_text = run_agent(
+        res_dict = run_agent(
             query=request.query,
             thread_id=request.thread_id,
             groq_api_key=api_key
         )
-        return QueryResponse(response=response_text)
+        return QueryResponse(
+            response=res_dict["response"],
+            itinerary_data=res_dict["itinerary_data"]
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

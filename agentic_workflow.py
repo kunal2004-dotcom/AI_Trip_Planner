@@ -1,6 +1,8 @@
 import os
-from typing import TypedDict, Annotated, Sequence, Optional
+from typing import TypedDict, Annotated, Sequence, Optional, List
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
+import json
 
 # Load local environment variables
 load_dotenv()
@@ -12,6 +14,41 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
+
+# ---------------------------------------------------------
+# Pydantic Schemas for Itinerary Structure
+# ---------------------------------------------------------
+class Activity(BaseModel):
+    time_of_day: str = Field(description="Morning, Afternoon, or Evening")
+    activity_name: str = Field(description="Name of the activity or place to visit")
+    description: str = Field(description="Detailed description of what to see/do, transit tips, or recommendations")
+    suggested_meal: Optional[str] = Field(None, description="Suggested restaurant, cafe, or local dish to try during/after this activity")
+    estimated_cost_usd: float = Field(description="Estimated cost in USD (0 if free)")
+
+class DayPlan(BaseModel):
+    day_number: int
+    theme: str = Field(description="The theme or main focus of the day (e.g., 'Historical Wonders', 'Local Cuisine Exploration')")
+    activities: List[Activity]
+
+class CostCategory(BaseModel):
+    category: str = Field(description="Category (e.g., Accommodation, Food, Activities, Transport, Miscellaneous)")
+    estimated_cost_usd: float
+    notes: str = Field(description="Reasoning/details for this estimate")
+
+class TravelTip(BaseModel):
+    title: str
+    details: str
+
+class TripItinerary(BaseModel):
+    destination: str
+    duration_days: int
+    overview: str = Field(description="An overall summary of the trip, general vibe, and what to expect")
+    best_time_to_visit: str = Field(description="Best months or season to visit and why")
+    weather_forecast_summary: str = Field(description="General expected weather pattern for this duration")
+    packing_checklist: List[str] = Field(description="Recommended items to pack tailored to this destination and season")
+    daily_plans: List[DayPlan]
+    budget_breakdown: List[CostCategory]
+    general_travel_tips: List[TravelTip]
 
 # ---------------------------------------------------------
 # Tool Definitions (Mapping to Core Tool Python files)
@@ -97,6 +134,16 @@ def get_map_url_tool(destination: str) -> str:
     from tools.map import get_map_url
     return get_map_url(destination)
 
+@tool
+def set_itinerary_dashboard_data_tool(itinerary_json: str) -> str:
+    """
+    Save the structured trip itinerary details to the frontend visual dashboard.
+    Call this tool whenever you have generated or updated a travel itinerary.
+    The itinerary_json parameter MUST be a valid JSON string matching the TripItinerary schema.
+    """
+    # This confirmation will be returned to the agent and the JSON will update the graph state
+    return "Itinerary data updated on the dashboard successfully."
+
 # Collect all tools
 ALL_TOOLS = [
     get_weather_tool,
@@ -107,7 +154,8 @@ ALL_TOOLS = [
     book_ticket_tool,
     search_hotels_tool,
     book_hotel_tool,
-    get_map_url_tool
+    get_map_url_tool,
+    set_itinerary_dashboard_data_tool
 ]
 
 # ---------------------------------------------------------
@@ -115,6 +163,7 @@ ALL_TOOLS = [
 # ---------------------------------------------------------
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
+    itinerary_data: Optional[str]
 
 def build_workflow(api_key: Optional[str] = None):
     # Initialize Llama 3.1 70B model from Groq
@@ -147,12 +196,27 @@ def build_workflow(api_key: Optional[str] = None):
                 "4. Calculate estimated costs using the expense tool and handle currency conversions with the currency tool if requested.\n"
                 "5. Offer ticket and hotel searches, and perform bookings if the user asks to book. Inform them that bookings are simulated but confirmed.\n"
                 "6. Provide the OpenStreetMap URL using the map tool so the UI can embed it.\n"
+                "7. CRITICAL: Whenever you generate or update a full trip plan, you MUST call the `set_itinerary_dashboard_data_tool` with a "
+                "fully populated JSON representation matching the `TripItinerary` schema. This displays the itinerary on the dashboard.\n"
                 "Be polite, professional, structured, and informative. Format recommendations cleanly using Markdown."
             ))
             messages = [system_prompt] + list(messages)
             
         response = model_with_tools.invoke(messages)
-        return {"messages": [response]}
+        
+        # Check if the model is invoking the set_itinerary_dashboard_data_tool
+        itinerary_json = None
+        if response.tool_calls:
+            for tc in response.tool_calls:
+                if tc["name"] == "set_itinerary_dashboard_data_tool":
+                    itinerary_json = tc["args"].get("itinerary_json")
+                    break
+                    
+        update_dict = {"messages": [response]}
+        if itinerary_json:
+            update_dict["itinerary_data"] = itinerary_json
+            
+        return update_dict
         
     # Router to determine transitions
     def should_continue(state: AgentState):
@@ -178,12 +242,150 @@ def build_workflow(api_key: Optional[str] = None):
     return workflow.compile(checkpointer=checkpointer)
 
 # ---------------------------------------------------------
+# Mock Itinerary JSON Builder (Fallback)
+# ---------------------------------------------------------
+def get_mock_itinerary_json(destination: str) -> str:
+    dest = destination.lower()
+    
+    if "goa" in dest:
+        title_prefix = "Goa Beach"
+        theme1 = "Beach Vibe & Sunsets"
+        theme2 = "Historical Heritage Tour"
+        theme3 = "Water Adventures & Sports"
+        theme4 = "Nature & Spice Trails"
+        theme5 = "Relaxation & Departure"
+        pack_list = ["Light cotton clothing", "Sunscreen (SPF 50+)", "Swimwear & sunglasses", "Beach sandals", "Comfortable walking shoes"]
+        overview_text = "A perfect tropical gateway featuring historic churches, sun-kissed sandy beaches, spice plantations, and thrilling water adventure sports."
+        visit_time = "November to February (Cooler weather, peak shack operations)"
+        weather_text = "Sunny skies, average temperature of 29°C with gentle sea breeze."
+        
+        act1 = "Arrive in Goa, check-in to Baga beach hotel and unpack."
+        act2 = "Relax on Baga sand, enjoy coconut water and watch paragliders."
+        act3 = "Walk around Anjuna cliffs and watch the sunset over the Arabian sea."
+        
+        act4 = "Explore the UNESCO World Heritage basilica of Bom Jesus in Old Goa."
+        act5 = "Visit Fort Aguada's 17th-century lighthouse and fortress."
+        act6 = "Stroll the colorful Portuguese Latin Quarter in Fontainhas."
+        
+        act7 = "Boat trip to Grand Island with dolphin spotting on the route."
+        act8 = "Snorkeling & Scuba diving in shallow reefs with certified guides."
+        act9 = "Ayurvedic massage at a local beach resort, followed by Greek dinner at Thalassa."
+        
+        act10 = "Safari jeep ride inside Bhagwan Mahavir Sanctuary to Dudhsagar Waterfalls."
+        act11 = "Tour Sahakari Spice Farm with Goan lunch cooked in fresh organic farm spices."
+        act12 = "Shop cashew nuts, feni, and Goan spices at Panaji Market."
+        
+        act13 = "Stroll the serene Morjim beach, a turtle nesting conservation zone."
+        act14 = "Check-out from hotel and transfer to Dabolim/Mopa airport."
+        act15 = "Return flight departure back home."
+    else:
+        title_prefix = f"{destination.title()} Explore"
+        theme1 = "Arrival & City Overview"
+        theme2 = "Famous Sights & Monuments"
+        theme3 = "Culinary Tour & Local Markets"
+        theme4 = "Nature Walk & Views"
+        theme5 = "Packing & Checkout"
+        pack_list = ["Comfortable shoes", "Camera & Charger", "Weather-appropriate layers", "Travel adapters"]
+        overview_text = f"An immersive travel itinerary showcasing the best of {destination.title()}'s culture, food, and sightseeing."
+        visit_time = "Spring and Autumn (Mild weather and pleasant outdoor walks)"
+        weather_text = "Clear skies, pleasant average temperature of 22°C."
+        
+        act1 = f"Land in {destination.title()}, hotel check-in and explore neighborhood."
+        act2 = "Sightseeing central boulevard and local squares."
+        act3 = "Dinner at a traditional local dining spot."
+        
+        act4 = "Guided historical tour of top central museums and landmarks."
+        act5 = "Visit iconic panoramic observation deck."
+        act6 = "Relaxing local garden or park walk."
+        
+        act7 = "Food tasting tour around central street market."
+        act8 = "Boutique shopping and souvenir hunt."
+        act9 = "Evening cultural performance or music show."
+        
+        act10 = "Nature hike or scenic drive in the outskirt valleys."
+        act11 = "Lunch at a countryside retreat farm."
+        act12 = "Visit local art gallery or craft studio."
+        
+        act13 = "Relaxing morning at hotel spa."
+        act14 = "Pack bags and arrange transfer to terminal."
+        act15 = "Board departure flight back home."
+
+    itinerary_dict = {
+        "destination": destination.title(),
+        "duration_days": 5,
+        "overview": overview_text,
+        "best_time_to_visit": visit_time,
+        "weather_forecast_summary": weather_text,
+        "packing_checklist": pack_list,
+        "daily_plans": [
+            {
+                "day_number": 1,
+                "theme": theme1,
+                "activities": [
+                    {"time_of_day": "Morning", "activity_name": "Check-in & Settle", "description": act1, "suggested_meal": "Local cafe breakfast", "estimated_cost_usd": 15.0},
+                    {"time_of_day": "Afternoon", "activity_name": "Explore Beach / Street", "description": act2, "suggested_meal": "Local street snacks", "estimated_cost_usd": 8.0},
+                    {"time_of_day": "Evening", "activity_name": "Sunset Views", "description": act3, "suggested_meal": "Beachfront dinner", "estimated_cost_usd": 25.0}
+                ]
+            },
+            {
+                "day_number": 2,
+                "theme": theme2,
+                "activities": [
+                    {"time_of_day": "Morning", "activity_name": "Heritage Walk", "description": act4, "suggested_meal": "Bakery treats & coffee", "estimated_cost_usd": 5.0},
+                    {"time_of_day": "Afternoon", "activity_name": "Fort / Monument Tour", "description": act5, "suggested_meal": "Traditional lunch", "estimated_cost_usd": 15.0},
+                    {"time_of_day": "Evening", "activity_name": "Cultural Walk", "description": act6, "suggested_meal": "Vindaloo/Authentic dinner", "estimated_cost_usd": 20.0}
+                ]
+            },
+            {
+                "day_number": 3,
+                "theme": theme3,
+                "activities": [
+                    {"time_of_day": "Morning", "activity_name": "Island Trip / Tour", "description": act7, "suggested_meal": "Barbecue lunch", "estimated_cost_usd": 30.0},
+                    {"time_of_day": "Afternoon", "activity_name": "Snorkeling / Sky Deck", "description": act8, "suggested_meal": "Fresh beverages", "estimated_cost_usd": 15.0},
+                    {"time_of_day": "Evening", "activity_name": "Relaxing Lounge", "description": act9, "suggested_meal": "Greek / Sunset dinner", "estimated_cost_usd": 40.0}
+                ]
+            },
+            {
+                "day_number": 4,
+                "theme": theme4,
+                "activities": [
+                    {"time_of_day": "Morning", "activity_name": "Waterfall / Valley Safari", "description": act10, "suggested_meal": "Packed buffet", "estimated_cost_usd": 25.0},
+                    {"time_of_day": "Afternoon", "activity_name": "Spice Farm / Country Lunch", "description": act11, "suggested_meal": "Farm fresh lunch", "estimated_cost_usd": 10.0},
+                    {"time_of_day": "Evening", "activity_name": "Market Shopping", "description": act12, "suggested_meal": "Traditional bistro dinner", "estimated_cost_usd": 15.0}
+                ]
+            },
+            {
+                "day_number": 5,
+                "theme": theme5,
+                "activities": [
+                    {"time_of_day": "Morning", "activity_name": "Beach Stroll / Spa", "description": act13, "suggested_meal": "Pancakes & tea", "estimated_cost_usd": 10.0},
+                    {"time_of_day": "Afternoon", "activity_name": "Checkout Preparation", "description": act14, "suggested_meal": "Quick cafe lunch", "estimated_cost_usd": 12.0},
+                    {"time_of_day": "Evening", "activity_name": "Airport Boarding", "description": act15, "suggested_meal": "Lounge snacks", "estimated_cost_usd": 0.0}
+                ]
+            }
+        ],
+        "budget_breakdown": [
+            {"category": "Accommodation", "estimated_cost_usd": 300.0, "notes": "Standard hotel stay charges"},
+            {"category": "Food", "estimated_cost_usd": 140.0, "notes": "Meals at local diners and shacks"},
+            {"category": "Activities", "estimated_cost_usd": 125.0, "notes": "Safari entries, rentals, and tours"},
+            {"category": "Transport", "estimated_cost_usd": 50.0, "notes": "Local cabs or scooter rentals"},
+            {"category": "Miscellaneous", "estimated_cost_usd": 35.0, "notes": "Guides and minor purchases"}
+        ],
+        "general_travel_tips": [
+            {"title": "Local Transport", "details": "Renting a gearless scooter or bicycle is the best way to get around local sight locations."},
+            {"title": "Card vs Cash", "details": "UPI/Cards are widely used, but keep some cash handy for street markets and guides."}
+        ]
+    }
+    return json.dumps(itinerary_dict)
+
+# ---------------------------------------------------------
 # Run Execution Wrapper
 # ---------------------------------------------------------
-def run_agent(query: str, thread_id: str, groq_api_key: Optional[str] = None) -> str:
+def run_agent(query: str, thread_id: str, groq_api_key: Optional[str] = None) -> dict:
     """
     Invokes the LangGraph compiled state graph with a query.
     Maintains memory context via thread_id.
+    Returns a dictionary with response text and itinerary dashboard data.
     """
     try:
         app = build_workflow(api_key=groq_api_key)
@@ -197,7 +399,11 @@ def run_agent(query: str, thread_id: str, groq_api_key: Optional[str] = None) ->
         
         # Extract the last message from the run
         last_message = events["messages"][-1]
-        return last_message.content
+        
+        return {
+            "response": last_message.content,
+            "itinerary_data": events.get("itinerary_data")
+        }
     except Exception as e:
         # Fallback to Mock Travel Agent when Groq API key is missing or invalid
         q_lower = query.lower()
@@ -213,31 +419,54 @@ def run_agent(query: str, thread_id: str, groq_api_key: Optional[str] = None) ->
         elif "delhi" in q_lower:
             destination = "delhi"
             
+        mock_itinerary = get_mock_itinerary_json(destination)
+        
         if "weather" in q_lower:
             from tools.weather import get_weather
-            return f"🤖 **[Mock Agent Fallback]** {get_weather(destination)}"
+            return {
+                "response": f"🤖 **[Mock Agent Fallback]** {get_weather(destination)}",
+                "itinerary_data": None
+            }
             
         elif "book" in q_lower or "ticket" in q_lower or "hotel" in q_lower:
             from tools.booking import search_tickets, book_ticket, search_hotels, book_hotel
             if "hotel" in q_lower:
                 if "option" in q_lower or "confirm" in q_lower or "reserve" in q_lower:
-                    return f"🤖 **[Mock Agent Fallback]**\n\n{book_hotel('Fairfield by Marriott', '2026-06-25', '2026-06-28', 'Guest User', 6500)}"
+                    return {
+                        "response": f"🤖 **[Mock Agent Fallback]**\n\n{book_hotel('Fairfield by Marriott', '2026-06-25', '2026-06-28', 'Guest User', 6500)}",
+                        "itinerary_data": None
+                    }
                 else:
-                    return f"🤖 **[Mock Agent Fallback]**\n\n{search_hotels(destination, '2026-06-25', '2026-06-28')}"
+                    return {
+                        "response": f"🤖 **[Mock Agent Fallback]**\n\n{search_hotels(destination, '2026-06-25', '2026-06-28')}",
+                        "itinerary_data": None
+                    }
             else:
                 if "option" in q_lower or "confirm" in q_lower or "reserve" in q_lower:
-                    return f"🤖 **[Mock Agent Fallback]**\n\n{book_ticket('Delhi', 'Goa', '2026-06-25', 'IndiGo (6E-2015)', 5500, 'Passenger User')}"
+                    return {
+                        "response": f"🤖 **[Mock Agent Fallback]**\n\n{book_ticket('Delhi', 'Goa', '2026-06-25', 'IndiGo (6E-2015)', 5500, 'Passenger User')}",
+                        "itinerary_data": None
+                    }
                 else:
-                    return f"🤖 **[Mock Agent Fallback]**\n\n{search_tickets('Delhi', destination, '2026-06-25', 'Flight')}"
+                    return {
+                        "response": f"🤖 **[Mock Agent Fallback]**\n\n{search_tickets('Delhi', destination, '2026-06-25', 'Flight')}",
+                        "itinerary_data": None
+                    }
                     
         elif "budget" in q_lower or "expense" in q_lower or "cost" in q_lower or "calculator" in q_lower or "price" in q_lower:
             from tools.expense import calculate_expenses
-            return f"🤖 **[Mock Agent Fallback]**\n\n{calculate_expenses(destination, 5, 'Moderate', 'Couple')}"
+            return {
+                "response": f"🤖 **[Mock Agent Fallback]**\n\n{calculate_expenses(destination, 5, 'Moderate', 'Couple')}",
+                "itinerary_data": mock_itinerary
+            }
             
         elif "map" in q_lower:
             from tools.map import get_map_url
             url = get_map_url(destination)
-            return f"🤖 **[Mock Agent Fallback]** Here is the interactive route map for {destination.title()}:\n\n({url})"
+            return {
+                "response": f"🤖 **[Mock Agent Fallback]** Here is the interactive route map for {destination.title()}:\n\n({url})",
+                "itinerary_data": None
+            }
             
         else:
             from tools.weather import get_weather
@@ -250,7 +479,7 @@ def run_agent(query: str, thread_id: str, groq_api_key: Optional[str] = None) ->
             budget_info = calculate_expenses(destination, 5, "Moderate", "Couple")
             map_info = get_map_url(destination)
             
-            return f"""
+            response_text = f"""
 🤖 **[Mock Agent Fallback]** Here is your personalized travel plan for a 5-Day trip to **{destination.title()}**:
 
 ### ☀️ Weather Status
@@ -279,3 +508,7 @@ Map embed URL: ({map_info})
 
 *How can I help you customize this? You can tell me to book flights, search hotels, check currency rates, or show local map details.*
 """.strip()
+            return {
+                "response": response_text,
+                "itinerary_data": mock_itinerary
+            }
